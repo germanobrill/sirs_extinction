@@ -13,7 +13,7 @@ t_total = 2000.0 # Duração máxima das simulações
 @njit
 def calcular_taxa_vac(t, S, V, t0, a, vac_num):
     # Condição de parada: o número de vacinados (V) atingiu o estoque total?
-    if t > t0 and S > 0 and V < vac_num:
+    if t > t0 and V < vac_num:
         return a  # Retorna a taxa de vacinação
     else:
         return 0.0 # Sem vacinação (taxa zero)
@@ -45,6 +45,14 @@ def evento_estado_estacionario(t, y, beta, mu, delta, t0, vac_num, a):
     
     return norma_derivadas - threshold
 
+''' Abaixo definimos um outro evento que vai indicar uma condição de parada na simulação.
+Quando a S se torna menor que 0.005, a simulação é interrompida. '''
+
+@njit
+def evento_parada_S_minimo(t, y, beta, mu, delta, t0, vac_num, a):
+    S = y[0]  # Acessamos S, que é o primeiro elemento do vetor y
+    return S - 0.005
+
 '''A função abaixo realiza a simulação do modelo SIRS usando o solve_ivp com base na função SIRS_numba,
 parando assim que a função evento_estado_estacionario retornar um valor negativo. Após concluída a
 simulação, a função retorna toda a série temporal de S, I, R e V, além de retornar os parâmetros usados.'''
@@ -58,6 +66,11 @@ def simular_uma_vez(n, r0, mu, delta, vac_num, t0, a):
     v_0 = 0.0
     delta_t = (0, t_total)
 
+    evento_estado_estacionario.terminal = True
+    evento_estado_estacionario.direction = -1
+    evento_parada_S_minimo.terminal = True
+    evento_parada_S_minimo.direction = -1
+
     sol = solve_ivp(
         SIRS_numba,
         delta_t,
@@ -65,11 +78,24 @@ def simular_uma_vez(n, r0, mu, delta, vac_num, t0, a):
         method='RK45',
         t_eval=np.linspace(delta_t[0], delta_t[1], int(t_total / dt)),
         args=(beta, mu, delta, t0, vac_num, a),
-        events=evento_estado_estacionario,
+        events= [evento_estado_estacionario,evento_parada_S_minimo],
         atol=1e-10,
         rtol=1e-6,
         max_step=0.1
     )
+    if sol.status == 1: # Um evento terminal parou a simulação
+        print("Simulação parada por um evento.")
+    
+    # sol.t_events[0] corresponde a 'evento_estado_estacionario'
+    if sol.t_events[0].size > 0:
+        print(f"-> Condição de 'Estado Estacionário' atingida em t={sol.t_events[0][0]:.2f}")
+        
+    # sol.t_events[1] corresponde a 'evento_parada_S_minimo'
+    if sol.t_events[1].size > 0:
+        print(f"-> Condição de 'S Mínimo' atingida em t={sol.t_events[1][0]:.2f}")
+
+    elif sol.success:
+        print("Simulação terminada ao atingir o tempo final (t_total).")
     # Definindo a probabilidade de Extinção:
     prob_ext = np.where(min(sol.y[1]) < 1/n, 1 - min(sol.y[1])*n, 0)
     params_dict = {'n': n, 'r0': r0, 'mu': mu, 'delta': delta, 'vac_num': vac_num, 't0': t0, 'a': a, 
@@ -86,13 +112,13 @@ def simular_uma_vez(n, r0, mu, delta, vac_num, t0, a):
 
 '''Lista de todos os parâmetros que se deseja realizar simulações'''
 
-N = np.array([1e4]) # Tamanho da população 
-R0 = np.array([1.2]) # Número de reprodução básico
-GAMMA = np.array([0.05, 0.1, 0.15, 0.2]) # Taxa de cura
-DELTA = np.array([0.006, 0.008]) # Taxa de perda de imunidade
-VAC_NUM = np.array([0.3, 0.45]) # Número de vacinas disponíveis (Normalizado)
-T0 = np.array([80]) # Data de início da vacinação
-A = np.array([0.01]) #Taxa de vacinação
+N = np.array([1e5]) # Tamanho da população 
+R0 = np.array([3.0]) # Número de reprodução básico
+GAMMA = np.array([0.2]) # Taxa de cura
+DELTA = np.array([0.05]) # Taxa de perda de imunidade
+VAC_NUM = np.array([1.0]) # Número de vacinas disponíveis (Normalizado)
+T0 = np.array([80.0]) # Data de início da vacinação
+A = np.array([0.02, 0.04, 0.06, 0.08]) #Taxa de vacinação
 
 '''O tqdm será usado para indicar quantas das simulações já foram realizadas e quantas iterações são realizadas 
 por segundo, o que permite um bom controle da eficiência e funcionamento do código.'''
@@ -125,4 +151,3 @@ with h5py.File('Simulações completas.h5', 'w') as f:
         grp.create_dataset('I', data=res['I'])
         grp.create_dataset('R', data=res['R'])
         grp.create_dataset('V', data=res['V'])
-
